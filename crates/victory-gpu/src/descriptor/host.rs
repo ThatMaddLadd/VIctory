@@ -1366,9 +1366,9 @@ mod tests {
         };
         let kept = |index: u32| heap.kept.lock().unwrap()[index as usize].is_some();
         for unordered in [false, true] {
-            heap.make_at(0, &placed(unordered, 1));
+            heap.make_at(0, &placed(unordered, 1), None);
             assert!(kept(0), "a view of an element (unordered: {unordered})");
-            heap.make_at(1, &placed(unordered, 0));
+            heap.make_at(1, &placed(unordered, 0), None);
             assert!(!kept(1), "a view of no elements (unordered: {unordered})");
             // SAFETY: a plain device query.
             let removed = unsafe { host.device.GetDeviceRemovedReason() };
