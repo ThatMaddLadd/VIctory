@@ -124,6 +124,8 @@ cargo build --profile diag -p victory --features diagnostics   # target\diag\vic
 | `VICTORY_SKIP_PIPELINES=<hash>,...` | omit draws and dispatches, including indirect ones, whose pipeline contains a listed 16-digit shader hash |
 | `VICTORY_GPU_TIMING=1` | with the above, each list of a submission run and timed on its own; slow lists logged with their slowest commands |
 | `VICTORY_D3D12_ADAPTER=<name>` | run on the GPU whose name contains this (any case, e.g. `3090`); without it the high-performance GPU, not an integrated one (any build) |
+| `VICTORY_WAVE64_EMULATE=<mode>` | how Wave64 compute shaders run: `auto` (default: native on 64-lane GPUs, `wave32` on 32-lane ones such as NVIDIA), `native`, `wave32`, `emulate` |
+| `VICTORY_FENCE_ONLY_BARRIERS=1` | barriers a per-lane branch reaches keep only their memory fence, not the thread-group sync; try it only if a shader deadlocks the GPU, and clear the shader cache when switching it (cached shaders keep the old setting) |
 | `VICTORY_D3D12_WARP=1` | host device on the software adapter (slow; cannot reset the driver) |
 | `VICTORY_SHADER_LOOP_LIMIT=<n>` | translated shader loops stop after `n` iterations per lane instead of 2^20 (own shader cache entries); if a lower `n` makes world frames much faster, loops hitting the limit are what makes them slow |
 | `VICTORY_AUDIO_CAPTURE=<file.wav>` | records what the title plays (our process only) |

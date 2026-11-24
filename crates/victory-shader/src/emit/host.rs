@@ -62,8 +62,55 @@ fn err(e: windows::core::Error) -> String {
     e.message().to_string()
 }
 
+/// The hardware adapter shader checks run on: the first in DXGI's
+/// high-performance order that makes a 12_0 device, preferring one whose
+/// description contains `VICTORY_D3D12_ADAPTER` (any case). On a machine
+/// with an integrated GPU beside a discrete one the default adapter can be
+/// the integrated one, whose lane counts differ (Wave64 mode selection).
+fn hardware_adapter() -> Option<IDXGIAdapter1> {
+    let wanted = std::env::var("VICTORY_D3D12_ADAPTER")
+        .ok()
+        .map(|w| w.trim().to_lowercase())
+        .filter(|w| !w.is_empty());
+    // SAFETY: plain DXGI queries; the device probe passes no output.
+    unsafe {
+        let factory: IDXGIFactory6 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).ok()?;
+        let mut first = None;
+        for i in 0.. {
+            let Ok(adapter) = factory
+                .EnumAdapterByGpuPreference::<IDXGIAdapter1>(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE)
+            else {
+                break;
+            };
+            let Ok(desc) = adapter.GetDesc1() else { continue };
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0
+                || D3D12CreateDevice(
+                    &adapter,
+                    D3D_FEATURE_LEVEL_12_0,
+                    std::ptr::null_mut::<Option<ID3D12Device>>(),
+                )
+                .is_err()
+            {
+                continue;
+            }
+            let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(128);
+            let name = String::from_utf16_lossy(&desc.Description[..len]).to_lowercase();
+            match &wanted {
+                Some(w) if name.contains(w.as_str()) => return Some(adapter),
+                Some(_) => {
+                    first.get_or_insert(adapter);
+                }
+                None => return Some(adapter),
+            }
+        }
+        first
+    }
+}
+
 impl Host {
-    /// The default adapter, or WARP with `warp` (or `VICTORY_WARP=1`).
+    /// The high-performance hardware adapter (or the one
+    /// `VICTORY_D3D12_ADAPTER` names, as for the title's device), or WARP
+    /// with `warp` (or `VICTORY_WARP=1`).
     pub fn new(warp: bool) -> Result<Self, String> {
         let warp = warp || std::env::var("VICTORY_WARP").is_ok_and(|v| v == "1");
         // SAFETY: plain D3D12/DXGI calls with valid out pointers.
@@ -82,6 +129,8 @@ impl Host {
                 if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 == 0 {
                     return Err("WARP adapter is not a software adapter".to_string());
                 }
+                D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device).map_err(err)?;
+            } else if let Some(adapter) = hardware_adapter() {
                 D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device).map_err(err)?;
             } else {
                 D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device).map_err(err)?;
@@ -1455,6 +1504,24 @@ mod tests {
             root_cbvs: Vec::new(),
             root_srvs: Vec::new(),
             table_views: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn hardware_adapter_is_not_software() {
+        // Probes DXGI only. A machine without a hardware adapter has none.
+        let Some(adapter) = hardware_adapter() else { return };
+        // SAFETY: a plain query of a live adapter.
+        let desc = unsafe { adapter.GetDesc1().unwrap() };
+        let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(128);
+        let name = String::from_utf16_lossy(&desc.Description[..len]);
+        assert_eq!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32, 0, "{name}");
+        if let Ok(h) = Host::new(false) {
+            let (ops, min, max) = h.wave_lanes();
+            eprintln!(
+                "shader host: {name}, wave ops {ops}, lanes {min}..={max}, {:?}",
+                h.recommended_wave64_mode()
+            );
         }
     }
 

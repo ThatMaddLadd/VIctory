@@ -1078,7 +1078,16 @@ impl<'a> Lower<'a> {
                 }
             }
         }
-        let fence_only_barrier = divergent_barriers(p, x.st, &no_barrier);
+        // #587 drops the thread-group sync from barriers a per-lane branch
+        // reaches, against 32-lane host deadlocks. That turns the common
+        // "lanes past the count leave, barrier, read LDS" pattern into a
+        // shared-memory race, so it stays off unless asked for
+        // (`VICTORY_FENCE_ONLY_BARRIERS=1`, e.g. if a mesh shader hangs).
+        let fence_only_barrier = if std::env::var_os("VICTORY_FENCE_ONLY_BARRIERS").is_some() {
+            divergent_barriers(p, x.st, &no_barrier)
+        } else {
+            HashSet::new()
+        };
         Lower {
             s,
             x,
