@@ -77,12 +77,15 @@ fn hardware_adapter() -> Option<IDXGIAdapter1> {
         let factory: IDXGIFactory6 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).ok()?;
         let mut first = None;
         for i in 0.. {
-            let Ok(adapter) = factory
-                .EnumAdapterByGpuPreference::<IDXGIAdapter1>(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE)
-            else {
+            let Ok(adapter) = factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(
+                i,
+                DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+            ) else {
                 break;
             };
-            let Ok(desc) = adapter.GetDesc1() else { continue };
+            let Ok(desc) = adapter.GetDesc1() else {
+                continue;
+            };
             if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0
                 || D3D12CreateDevice(
                     &adapter,
@@ -1508,14 +1511,53 @@ mod tests {
     }
 
     #[test]
+    fn outputs_packed_out_of_column_order_validate() {
+        // Two outputs share row 0, declared with the higher columns first:
+        // the container's signature order must agree with the metadata's.
+        use crate::emit::validator::Validator;
+        let Ok(mut v) = Validator::load(Validator::default_path().as_deref()) else {
+            return;
+        };
+        let element = |name: &str, kind: u8, row: u32, col: u8, cols: u8| SigElement {
+            name: name.into(),
+            index: 0,
+            kind,
+            comp: 9,
+            interp: if kind == 3 { 4 } else { 2 },
+            row: Some(row),
+            col,
+            cols,
+            usage: 0,
+            half: false,
+        };
+        let vs = stub(
+            false,
+            vec![
+                element("HIGH", 0, 0, 2, 2),
+                element("LOW", 0, 0, 0, 2),
+                element("SV_Position", 3, 1, 0, 4),
+            ],
+        );
+        let mut dxil = vs.dxil.clone();
+        v.validate(&mut dxil)
+            .expect("packed outputs out of column order");
+    }
+
+    #[test]
     fn hardware_adapter_is_not_software() {
         // Probes DXGI only. A machine without a hardware adapter has none.
-        let Some(adapter) = hardware_adapter() else { return };
+        let Some(adapter) = hardware_adapter() else {
+            return;
+        };
         // SAFETY: a plain query of a live adapter.
         let desc = unsafe { adapter.GetDesc1().unwrap() };
         let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(128);
         let name = String::from_utf16_lossy(&desc.Description[..len]);
-        assert_eq!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32, 0, "{name}");
+        assert_eq!(
+            desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32,
+            0,
+            "{name}"
+        );
         if let Ok(h) = Host::new(false) {
             let (ops, min, max) = h.wave_lanes();
             eprintln!(
