@@ -180,6 +180,8 @@ fn create() -> windows::core::Result<Host> {
             let adapter = warp_adapter()?;
             D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device)?;
             tracing::info!("host device on the software adapter (WARP)");
+        } else if let Some(adapter) = host_adapter() {
+            D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_12_0, &mut device)?;
         } else {
             D3D12CreateDevice(None, D3D_FEATURE_LEVEL_12_0, &mut device)?;
         }
@@ -228,6 +230,85 @@ fn create() -> windows::core::Result<Host> {
 
 /// DXGI may return hardware for `EnumWarpAdapter` (notably under Proton).
 /// Reject it before creating a device in diagnostics' software-only mode.
+/// The hardware adapter to run on: the one named by `VICTORY_D3D12_ADAPTER`
+/// (a case-insensitive part of its description, e.g. `3090` or `nvidia`), or
+/// else the first in DXGI's high-performance order. On a machine with an
+/// integrated GPU as well as a discrete one, the default adapter can be the
+/// integrated one; this takes the discrete one. None: let D3D12 choose.
+fn host_adapter() -> Option<IDXGIAdapter1> {
+    let wanted = std::env::var("VICTORY_D3D12_ADAPTER").ok();
+    let wanted = wanted.as_deref().filter(|w| !w.trim().is_empty());
+    // SAFETY: plain DXGI adapter queries; the device probe passes no output.
+    unsafe {
+        let factory: IDXGIFactory6 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)).ok()?;
+        let mut found = Vec::new();
+        for i in 0.. {
+            let Ok(adapter) = factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(
+                i,
+                DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+            ) else {
+                break;
+            };
+            let Ok(desc) = adapter.GetDesc1() else {
+                continue;
+            };
+            let software = desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0;
+            // Only adapters D3D12 can make a device on at this level.
+            let usable = !software
+                && D3D12CreateDevice(
+                    &adapter,
+                    D3D_FEATURE_LEVEL_12_0,
+                    std::ptr::null_mut::<Option<ID3D12Device>>(),
+                )
+                .is_ok();
+            let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(128);
+            let name = String::from_utf16_lossy(&desc.Description[..len]);
+            tracing::debug!(%name, vendor = format_args!("{:#x}", desc.VendorId), usable, "host adapter");
+            found.push((adapter, name, desc, usable));
+        }
+        let names: Vec<(&str, bool)> = found.iter().map(|f| (f.1.as_str(), f.3)).collect();
+        let Some(i) = pick_adapter(&names, wanted) else {
+            if let Some(w) = wanted {
+                tracing::warn!(
+                    wanted = w,
+                    "VICTORY_D3D12_ADAPTER matches no usable adapter"
+                );
+            }
+            return None;
+        };
+        let (adapter, name, desc, _) = found.swap_remove(i);
+        if let Some(w) = wanted
+            && !name.to_lowercase().contains(&w.trim().to_lowercase())
+        {
+            tracing::warn!(
+                wanted = w,
+                "VICTORY_D3D12_ADAPTER matches no usable adapter"
+            );
+        }
+        tracing::info!(
+            %name,
+            vendor = format_args!("{:#x}", desc.VendorId),
+            memory_mib = desc.DedicatedVideoMemory / (1 << 20),
+            "host adapter chosen"
+        );
+        Some(adapter)
+    }
+}
+
+/// Which of `adapters` (description, usable), in high-performance order, to
+/// run on: the first usable one whose description contains `wanted` (any
+/// case), or the first usable one when `wanted` is absent or matches none.
+fn pick_adapter(adapters: &[(&str, bool)], wanted: Option<&str>) -> Option<usize> {
+    let first = adapters.iter().position(|a| a.1);
+    let Some(wanted) = wanted.map(|w| w.trim().to_lowercase()) else {
+        return first;
+    };
+    adapters
+        .iter()
+        .position(|a| a.1 && a.0.to_lowercase().contains(&wanted))
+        .or(first)
+}
+
 fn warp_adapter() -> windows::core::Result<IDXGIAdapter> {
     // SAFETY: plain DXGI adapter queries.
     unsafe {
@@ -251,6 +332,45 @@ fn warp_adapter() -> windows::core::Result<IDXGIAdapter> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_pick_prefers_the_named_usable_one() {
+        let found = [
+            ("NVIDIA GeForce RTX 3090", true),
+            ("AMD Radeon(TM) Graphics", true),
+            ("Microsoft Basic Render Driver", false),
+        ];
+        assert_eq!(pick_adapter(&found, None), Some(0));
+        assert_eq!(pick_adapter(&found, Some("radeon")), Some(1));
+        assert_eq!(pick_adapter(&found, Some(" 3090 ")), Some(0));
+        // A name matching nothing usable falls back to the first usable one.
+        assert_eq!(pick_adapter(&found, Some("basic render")), Some(0));
+        assert_eq!(pick_adapter(&found, Some("intel")), Some(0));
+        assert_eq!(pick_adapter(&[("x", false)], None), None);
+        assert_eq!(pick_adapter(&[], Some("nvidia")), None);
+        // Order decides between usable adapters when nothing is named.
+        assert_eq!(
+            pick_adapter(&[("a", false), ("b", true), ("c", true)], None),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn host_adapter_is_hardware() {
+        // Probes DXGI only; no title runs. A machine without a hardware
+        // D3D12 adapter (a CI runner) has none to check.
+        let Some(adapter) = host_adapter() else {
+            return;
+        };
+        // SAFETY: a plain query of a live adapter.
+        let desc = unsafe { adapter.GetDesc1().unwrap() };
+        let len = desc.Description.iter().position(|&c| c == 0).unwrap_or(128);
+        eprintln!(
+            "host adapter: {}",
+            String::from_utf16_lossy(&desc.Description[..len])
+        );
+        assert_eq!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32, 0);
+    }
 
     #[test]
     fn warp_adapter_accepts_only_software() {
