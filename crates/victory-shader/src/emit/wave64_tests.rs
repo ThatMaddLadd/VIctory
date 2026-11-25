@@ -773,7 +773,27 @@ mod gpu {
     use std::sync::{Mutex, OnceLock};
 
     use super::*;
-    use crate::emit::host::{Dispatch, Host, View};
+    use crate::emit::VIEW_STRIDES;
+    use crate::emit::host::{Dispatch, Host, Root, View};
+
+    /// The root views a dispatch of `shader` binds: the view-stride table
+    /// (`t`[`VIEW_STRIDES`], root parameter 1 after the user data) where its
+    /// heap-indexed buffer views are guarded, the raw UAV at index 0 4-byte.
+    fn roots_for(shader: &HostShader) -> Vec<(u32, Root)> {
+        if shader.root_srvs.contains(&VIEW_STRIDES) {
+            assert!(shader.root_cbvs.is_empty() && shader.root_uavs.is_empty());
+            assert_eq!(shader.root_srvs, [VIEW_STRIDES]);
+            vec![(
+                1,
+                Root::View {
+                    srv: true,
+                    data: vec![4],
+                },
+            )]
+        } else {
+            Vec::new()
+        }
+    }
 
     fn with_hosts(f: impl FnOnce(&[Option<Host>; 2])) {
         static HOSTS: OnceLock<Mutex<[Option<Host>; 2]>> = OnceLock::new();
@@ -827,7 +847,7 @@ mod gpu {
                             &root,
                             &pso,
                             &Dispatch {
-                                roots: Vec::new(),
+                                roots: roots_for(&shader),
                                 views: &[View::RawUav(uav_dwords)],
                                 samplers: &[],
                                 groups,
