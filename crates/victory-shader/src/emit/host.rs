@@ -634,7 +634,6 @@ fn stub(pixel: bool, outputs: Vec<SigElement>) -> HostShader {
         static_samplers: Vec::new(),
         root_cbvs: Vec::new(),
         root_srvs: Vec::new(),
-        table_views: Vec::new(),
     }
 }
 
@@ -1506,7 +1505,6 @@ mod tests {
             static_samplers: Vec::new(),
             root_cbvs: Vec::new(),
             root_srvs: Vec::new(),
-            table_views: Vec::new(),
         }
     }
 
