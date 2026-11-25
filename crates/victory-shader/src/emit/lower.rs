@@ -3721,10 +3721,11 @@ impl<'a> Lower<'a> {
 
     /// This lane's bit of the mask `lo`, `hi` (wave64).
     fn lane_bit(&mut self, at: usize, lo: V, hi: Option<V>) -> V {
-        self.s.flags |= flags::WAVE_OPS;
         let lane = if self.s.threads.is_some() && self.emulating_wave64() {
             self.ensure_wave_ids().1
         } else {
+            // A wave operation: the module must declare them.
+            self.s.flags |= flags::WAVE_OPS;
             self.s.op(
                 at,
                 "waveGetLaneIndex",
